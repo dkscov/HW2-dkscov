@@ -1,0 +1,132 @@
+David Scoville HW2
+========================================================
+
+This is my code and figure for the Homework2 assignment
+
+First - load necessary packages and grab the dataset from GEO
+
+```{r}
+library(GEOquery)
+library(limma)
+library(Biobase)
+
+gds_hw2<-getGEO("GSE40812")
+
+```
+Grab the title from the eSet for identification of subjects later and "sanitizing"" the GEO data
+
+```{r}
+gds_hw2_san<-gds_hw2
+
+title.char<-as.character(pData(gds_hw2_san)$title)
+
+sanitize_pdata_hw2 <- function(pd){
+keepCols<-c("characteristics_ch1","characteristics_ch1.1", "characteristics_ch1.2")
+pd<-pd[,keepCols]
+colnames(pd)<-c("HCV","celltype","Poly_IC")
+pd$HCV<-gsub("infection status: ","",pd$HCV)
+pd$celltype<-gsub("cell type: ","",pd$celltype)
+pd$Poly_IC<-gsub("treatment: ","",pd$Poly_IC)
+pd
+}
+
+pData(gds_hw2_san) <- sanitize_pdata_hw2(pData(gds_hw2_san))
+gds_hw2_san_subj.id<-gds_hw2_san
+```
+
+Adding subject ID to the pData and trimming the dataset to only include macrophage data
+```{r}
+subj.id<-(unlist(strsplit(title.char,"_",fixed=T)))[seq(2,400,5)]
+pData(gds_hw2_san_subj.id)<-cbind(subj.id,pData(gds_hw2_san_subj.id))
+
+hw2_macs_subj.id<-gds_hw2_san_subj.id[,grepl("Monocyte-derived Macrophage",pData(gds_hw2_san_subj.id)$celltype)]
+
+```
+
+Creating LIMMA model with only Poly_IC
+```{r}
+mm_hw2_macs_subj.id<-model.matrix(~Poly_IC,data=hw2_macs_subj.id)
+fit_hw2_macs_subj.id<-lmFit(hw2_macs_subj.id,mm_hw2_macs_subj.id)
+ebay_hw2_macs_subj.id<-eBayes(fit_hw2_macs_subj.id)
+
+```
+
+topTable to look at model results - and selecting for probes with a foldchange >1.5 and an adjusted
+p-value < 0.5
+```{r}
+top_Poly_IC_subj.id<-topTable(ebay_hw2_macs_subj.id,coef="Poly_ICPoly IC H",number=Inf,sort.by="none")
+dim(top_Poly_IC_subj.id[which(top_Poly_IC_subj.id$adj.P.Val<0.05 & abs(top_Poly_IC_subj.id$logFC)>log2(1.5)),])
+```
+
+subsetting the data based on the Poly_IC topTable probes that have a foldchange >1.5 and an adjusted
+p-value < 0.5
+```{r}
+hw2_macs_PIC_sig_subj.id<-hw2_macs_subj.id[which(top_Poly_IC_subj.id$adj.P.Val<0.05 & abs(top_Poly_IC_subj.id$logFC)>log2(1.5)),]
+
+```
+
+running another LIMMA model with HCV and subject ID as factors - and looking at probes that have a 
+p-value of < 0.1
+
+```{r}
+mm_hw2_macs_PIC_sig_subj.id<-model.matrix(~HCV+subj.id,data=hw2_macs_PIC_sig_subj.id)
+fit_hw2_macs_PIC_sig_subj.id<-lmFit(hw2_macs_PIC_sig_subj.id,mm_hw2_macs_PIC_sig_subj.id)
+ebay_hw2_macs_PIC_sig_subj.id<-eBayes(fit_hw2_macs_PIC_sig_subj.id)
+top_HCV_PIC_sig_subj.id<-topTable(ebay_hw2_macs_PIC_sig_subj.id,coef="HCVPos",number=Inf,sort.by="none")
+top_HCV_PIC_sig_subj.id[which(top_HCV_PIC_sig_subj.id$P.Value<0.1),]
+dim(top_HCV_PIC_sig_subj.id[which(top_HCV_PIC_sig_subj.id$P.Value<0.1),])
+
+```
+
+Calculating z-scores for each probe sets with a p-value of < 0.1 across each subject. 
+
+```{r}
+HCV_subj.id_exprs<-exprs(hw2_macs_PIC_sig_subj.id[which(top_HCV_PIC_sig_subj.id$P.Value<0.1)])
+zscores_HCV_subj.id<-matrix(0,nrow=8,ncol=40)
+
+for (i in 1:8) {
+exprs.val<-HCV_subj.id_exprs[i,]
+mean.exprs.val<-mean(exprs.val)
+sd.exprs.val<-sd(exprs.val)
+zscore.exprs.value<-(exprs.val-mean.exprs.val)/sd.exprs.val
+zscores_HCV_subj.id[i,]<-zscore.exprs.value
+}
+row.names(zscores_HCV_subj.id)<-row.names(HCV_subj.id_exprs)
+colnames(zscores_HCV_subj.id)<-colnames(HCV_subj.id_exprs)
+
+
+```
+
+Adding pData info to the zscores matrix to be able to sort the matrix by Poly_IC and HCV status for the heatmap
+
+```{r}
+library(gplots)
+zscores_HCV_subj.id<-cbind(pData(hw2_macs_PIC_sig_subj.id)[c(1,2,4)],t(zscores_HCV_subj.id))
+
+zscores_heatmap_matrix<-matrix(as.numeric(t(zscores_HCV_subj.id[order(zscores_HCV_subj.id$Poly_IC,zscores_HCV_subj.id$HCV,zscores_HCV_subj.id$subj.id),])[c(4:11),]),nrow=8)
+
+```
+
+Changing the heatmap matrix column labels to include subject ID, Poly IC Status and HCV status
+```{r}
+colnames(zscores_heatmap_matrix)<-paste(zscores_HCV_subj.id[order(zscores_HCV_subj.id$Poly_IC,zscores_HCV_subj.id$HCV,zscores_HCV_subj.id$subj.id),1],"_",zscores_HCV_subj.id[order(zscores_HCV_subj.id$Poly_IC,zscores_HCV_subj.id$HCV,zscores_HCV_subj.id$subj.id),2,],"_",zscores_HCV_subj.id[order(zscores_HCV_subj.id$Poly_IC,zscores_HCV_subj.id$HCV,zscores_HCV_subj.id$subj.id),3])
+
+```
+
+Generating a heatmap using the heatmap.2 function in the gplots package and writing it to a .png file
+
+- The heatmap is not clustered in any way, and the color scale is similar to the paper. The probes are labeled and the column names are the subject IDs with their respective info regarding poly_ic and HCV status.
+
+```{r}
+graphics.off()
+png(file=paste("DKS HW2 heatmap.png"),width=4000,height=3000,res=300)
+
+RYW <- function(n){colorpanel(n,"red","yellow","white")}
+heatmap.2(zscores_heatmap_matrix,Rowv=NULL ,Colv=NULL ,dendrogram="none",
+labRow=row.names(HCV_subj.id_exprs),scale="none",
+col=RYW, trace="none",key = TRUE, keysize = 1,density.info=c("none"),margins=c(14,12))
+
+dev.off()
+
+```
+
